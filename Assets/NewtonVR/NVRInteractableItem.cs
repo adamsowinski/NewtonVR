@@ -50,61 +50,72 @@ namespace NewtonVR
         {
             if (IsAttached == true)
             {
-                CheckForDrop();
+                bool dropped = CheckForDrop();
 
-                Quaternion rotationDelta;
-                Vector3 positionDelta;
-
-                float angle;
-                Vector3 axis;
-
-                if (InteractionPoint != null)
+                if (dropped == false)
                 {
-                    rotationDelta = AttachedHand.transform.rotation * Quaternion.Inverse(InteractionPoint.rotation);
-                    positionDelta = (AttachedHand.transform.position - InteractionPoint.position);
-                }
-                else
-                {
-                    rotationDelta = PickupTransform.rotation * Quaternion.Inverse(this.transform.rotation);
-                    positionDelta = (PickupTransform.position - this.transform.position);
-                }
-
-                rotationDelta.ToAngleAxis(out angle, out axis);
-
-                if (angle > 180)
-                    angle -= 360;
-
-                if (angle != 0)
-                {
-                    Vector3 angularTarget = angle * axis;
-                    if (float.IsNaN(angularTarget.x) == false)
-                    {
-                        angularTarget = (angularTarget * AngularVelocityMagic) * Time.fixedDeltaTime;
-                        this.Rigidbody.angularVelocity = Vector3.MoveTowards(this.Rigidbody.angularVelocity, angularTarget, MaxAngularVelocityChange);
-                    }
-                }
-
-                Vector3 velocityTarget = (positionDelta * VelocityMagic) * Time.fixedDeltaTime;
-                if (float.IsNaN(velocityTarget.x) == false)
-                {
-                    this.Rigidbody.velocity = Vector3.MoveTowards(this.Rigidbody.velocity, velocityTarget, MaxVelocityChange);
-                }
-
-
-                if (VelocityHistory != null)
-                {
-                    CurrentVelocityHistoryStep++;
-                    if (CurrentVelocityHistoryStep >= VelocityHistory.Length)
-                    {
-                        CurrentVelocityHistoryStep = 0;
-                    }
-
-                    VelocityHistory[CurrentVelocityHistoryStep] = this.Rigidbody.velocity;
-                    AngularVelocityHistory[CurrentVelocityHistoryStep] = this.Rigidbody.angularVelocity;
+                    UpdateVelocities();
                 }
             }
 
             AddExternalVelocities();
+        }
+
+        protected virtual void UpdateVelocities()
+        {
+            float velocityMagic = VelocityMagic / (Time.deltaTime / NVRPlayer.NewtonVRExpectedDeltaTime);
+            float angularVelocityMagic = AngularVelocityMagic / (Time.deltaTime / NVRPlayer.NewtonVRExpectedDeltaTime);
+
+            Quaternion rotationDelta;
+            Vector3 positionDelta;
+
+            float angle;
+            Vector3 axis;
+
+            if (InteractionPoint != null || PickupTransform == null) //PickupTransform should only be null
+            {
+                rotationDelta = AttachedHand.transform.rotation * Quaternion.Inverse(InteractionPoint.rotation);
+                positionDelta = (AttachedHand.transform.position - InteractionPoint.position);
+            }
+            else
+            {
+                rotationDelta = PickupTransform.rotation * Quaternion.Inverse(this.transform.rotation);
+                positionDelta = (PickupTransform.position - this.transform.position);
+            }
+
+            rotationDelta.ToAngleAxis(out angle, out axis);
+
+            if (angle > 180)
+                angle -= 360;
+
+            if (angle != 0)
+            {
+                Vector3 angularTarget = angle * axis;
+                if (float.IsNaN(angularTarget.x) == false)
+                {
+                    angularTarget = (angularTarget * angularVelocityMagic) * Time.deltaTime;
+                    this.Rigidbody.angularVelocity = Vector3.MoveTowards(this.Rigidbody.angularVelocity, angularTarget, MaxAngularVelocityChange);
+                }
+            }
+
+            Vector3 velocityTarget = (positionDelta * velocityMagic) * Time.deltaTime;
+            if (float.IsNaN(velocityTarget.x) == false)
+            {
+                this.Rigidbody.velocity = Vector3.MoveTowards(this.Rigidbody.velocity, velocityTarget, MaxVelocityChange);
+            }
+
+
+            if (VelocityHistory != null)
+            {
+                CurrentVelocityHistoryStep++;
+                if (CurrentVelocityHistoryStep >= VelocityHistory.Length)
+                {
+                    CurrentVelocityHistoryStep = 0;
+                }
+
+                VelocityHistory[CurrentVelocityHistoryStep] = this.Rigidbody.velocity;
+                AngularVelocityHistory[CurrentVelocityHistoryStep] = this.Rigidbody.angularVelocity;
+            }
         }
 
         protected virtual void AddExternalVelocities()
@@ -160,12 +171,7 @@ namespace NewtonVR
             PickupTransform.position = this.transform.position;
             PickupTransform.rotation = this.transform.rotation;
 
-
-            if (hand.Player.VelocityHistorySteps > 0)
-            {
-                VelocityHistory = new Vector3?[hand.Player.VelocityHistorySteps];
-                AngularVelocityHistory = new Vector3?[hand.Player.VelocityHistorySteps];
-            }
+            ResetVelocityHistory();
 
             if (OnBeginInteraction != null)
             {
@@ -185,19 +191,8 @@ namespace NewtonVR
                 Destroy(PickupTransform.gameObject);
             }
 
-            if (VelocityHistory != null)
-            {
-                this.Rigidbody.velocity = GetMeanVector(VelocityHistory);
-                this.Rigidbody.angularVelocity = GetMeanVector(AngularVelocityHistory);
-
-                CurrentVelocityHistoryStep = 0;
-
-                for (int index = 0; index < VelocityHistory.Length; index++)
-                {
-                    VelocityHistory[index] = null;
-                    AngularVelocityHistory[index] = null;
-                }
-            }
+            ApplyVelocityHistory();
+            ResetVelocityHistory();
 
             if (OnEndInteraction != null)
             {
@@ -215,10 +210,10 @@ namespace NewtonVR
             }
         }
 
-        public override void Reset()
+        public override void ResetInteractable()
         {
             EndInteraction();
-            base.Reset();
+            base.ResetInteractable();
         }
 
         public override void UseButtonDown()
@@ -241,7 +236,36 @@ namespace NewtonVR
             }
         }
 
-        private Vector3 GetMeanVector(Vector3?[] positions)
+        protected virtual void ApplyVelocityHistory()
+        {
+            if (VelocityHistory != null)
+            {
+                Vector3? meanVelocity = GetMeanVector(VelocityHistory);
+                if (meanVelocity != null)
+                {
+                    this.Rigidbody.velocity = meanVelocity.Value;
+                }
+
+                Vector3? meanAngularVelocity = GetMeanVector(AngularVelocityHistory);
+                if (meanAngularVelocity != null)
+                {
+                    this.Rigidbody.angularVelocity = meanAngularVelocity.Value;
+                }
+            }
+        }
+
+        protected virtual void ResetVelocityHistory()
+        {
+            if (NVRPlayer.Instance.VelocityHistorySteps > 0)
+            {
+                CurrentVelocityHistoryStep = 0;
+
+                VelocityHistory = new Vector3?[NVRPlayer.Instance.VelocityHistorySteps];
+                AngularVelocityHistory = new Vector3?[NVRPlayer.Instance.VelocityHistorySteps];
+            }
+        }
+
+        protected Vector3? GetMeanVector(Vector3?[] positions)
         {
             float x = 0f;
             float y = 0f;
@@ -260,7 +284,12 @@ namespace NewtonVR
                 }
             }
 
-            return new Vector3(x / count, y / count, z / count);
+            if (count > 0)
+            {
+                return new Vector3(x / count, y / count, z / count);
+            }
+
+            return null;
         }
     }
 }
